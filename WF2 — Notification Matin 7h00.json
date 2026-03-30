@@ -1,0 +1,426 @@
+{
+  "name": "WF2 — Notification Matin 7h00",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// ===========================================\n// Node: Get Current Day\n// ===========================================\nconst tahitiTime = new Date().toLocaleString('en-US', {timeZone: 'Pacific/Tahiti'});\nconst now = new Date(tahitiTime);\n// getDay() gives 0 for Sunday. We want 1=Monday...7=Sunday\nconst weekday = (now.getDay() === 0 ? 7 : now.getDay());\n\nconst dayTabMap = {\n  1: 'Lundi', 2: 'Mardi', 3: 'Mercredi',\n  4: 'Jeudi', 5: 'Vendredi', 6: 'Samedi'\n};\nconst currentTab = dayTabMap[weekday] || null;\n\nreturn [{\n  json: {\n    isWeekday:  !!currentTab,\n    currentTab: currentTab,\n    weekday:    weekday,\n    dateStr:    (String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear())\n  }\n}];"
+      },
+      "id": "0d1ce959-c855-48ff-83f1-1dc4e79ca7a0",
+      "name": "Get Current Day1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5072,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-weekday-check",
+              "leftValue": "={{ $json.isWeekday }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "99b4b5eb-e311-4ae7-b104-d7a9d3a33b6e",
+      "name": "Is Weekday?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -4832,
+        3984
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $node['Get Current Day1'].json.currentTab }}"
+        },
+        "options": {}
+      },
+      "id": "0f1cbfde-015f-4876-ab1c-06215fb18fb1",
+      "name": "Get Today Rows1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -4592,
+        3856
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst notifList = [];\nfor (const row of rows) {\n  const r = row.json;\n  if (r['ID Shopify'] === 'ID Shopify' || !r['ID Shopify']) continue;\n  const phone = String(r['Téléphone'] || '').trim();\n  const email = String(r['Email client'] || r['emailClient'] || r['Email'] || '').trim();\n  if (!phone && !email) continue;\n  const livraison = String(r['Livraison'] || '').trim();\n  if (livraison !== 'Livraison en attente') continue;\n  let phoneNorm = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (phoneNorm && !phoneNorm.startsWith('+')) {\n    phoneNorm = phoneNorm.startsWith('689') ? '+' + phoneNorm : '+689' + phoneNorm;\n  }\n  const message = \"Iaorana, notre livreur vous livrera aujourd'hui. \"\n    + \"Il vous contactera directement par téléphone. \"\n    + \"Le paiement se fera directement avec lui lors de la livraison. \"\n    + \"Belle journée.\";\n  notifList.push({\n    to:           phoneNorm,\n    emailClient:  email || null,         // null si vide = Gmail ne plantera plus\n    sendEmail:    !!email,              // true uniquement si email valide\n    message:      message,\n    client:       r['À CLIENT'] || 'Client',\n    ref:          r['Réf commande'] || 'N/A',\n    noNotif:      false                 // toujours défini → résout le bug \"undefined\"\n  });\n}\nif (notifList.length === 0) {\n  return [{ json: { noNotif: true, reason: 'Aucun client à contacter' } }];\n}\nreturn notifList.map(n => ({ json: n }));"
+      },
+      "id": "1240811a-cb30-4071-8c61-a3b727a7bb94",
+      "name": "Filter & Prepare Notifications1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4352,
+        3856
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-notif-check",
+              "leftValue": "={{ $json.noNotif }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6454cfa4-cac7-47c3-b9f9-7686197eb7b4",
+      "name": "Has Notifications?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -4144,
+        3856
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "=1009160395618364",
+        "recipientPhoneNumber": "={{ $json.to }}",
+        "textBody": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "id": "05461da9-1a89-4a06-bcbe-71ef82268d94",
+      "name": "WhatsApp Matin1",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        -3856,
+        3712
+      ],
+      "webhookId": "029509bd-16e5-4748-a1a5-1454e0f8fa2d",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "USY4io4YgO0uWXdC",
+          "name": "WhatsApp account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailClient }}",
+        "subject": "=Fenua Api — Votre livraison du jour",
+        "emailType": "text",
+        "message": "=Iaorana {{ $json.client }},\n\nNotre livreur vous livrera aujourd'hui.\nIl vous contactera directement par téléphone.\nLe paiement se fera directement avec lui lors de la livraison.\n\nBelle journée !\nFenua Api",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d5af338e-124d-4c94-8914-e849d33698eb",
+      "name": "Email Matin1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -3856,
+        3952
+      ],
+      "webhookId": "3c125859-37db-45ca-9a30-4119a3bac298",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "b6TTQUXnPTgHFYJY",
+          "name": "Gmail account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Node: Check Notification Results\n// WF2 - Vérifier si des envois ont échoué\n// ============================================================\nconst items = $input.all();\n\nconst errors = [];\nlet successCount = 0;\n\nfor (const item of items) {\n  const r = item.json;\n\n  // Détection d'erreur : si n8n a ajouté un champ error (continueOnFail)\n  const hasError = r.error\n    || (r.http_code && r.http_code !== 200)\n    || (r.response_code && r.response_code !== 'SUCCESS');\n\n  if (hasError) {\n    errors.push({\n      client: r.client || 'Inconnu',\n      to:     r.to || r.emailClient || 'N/A',\n      error:  r.error?.message || r.response_code || 'Erreur inconnue'\n    });\n  } else {\n    successCount++;\n  }\n}\n\nreturn [{\n  json: {\n    hasErrors:    errors.length > 0,\n    errorCount:   errors.length,\n    successCount: successCount,\n    totalNotif:   items.length,\n    errorDetails: errors.length > 0\n      ? errors.map(e => `${e.client} (${e.to}): ${e.error}`).join('\\n')\n      : '',\n    summary: errors.length > 0\n      ? `${errors.length} notification(s) échouée(s) sur ${items.length}`\n      : `${successCount} notification(s) envoyée(s) avec succès`\n  }\n}];"
+      },
+      "id": "a774f07e-2a6d-4ed3-90e1-87b51ba28b2b",
+      "name": "Check Notification Results1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3600,
+        3712
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-errors-check",
+              "leftValue": "={{ $json.hasErrors }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8f9df59c-bf62-4874-9f38-fb8115f5e102",
+      "name": "Has Errors?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3376,
+        3712
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "support@fenuapi.com",
+        "subject": "=[ERREUR WF2] Notifications matin — {{ $json.errorCount }} échec(s) sur {{ $json.totalNotif }}",
+        "emailType": "text",
+        "message": "=Erreur dans WF2 (Notifications Matin 7h00).\n\nCertains clients n'ont peut-être pas reçu leur notification de livraison.\n\nRésumé : {{ $json.summary }}\n\nDétails des erreurs :\n{{ $json.errorDetails }}\n\nDate : {{ $now }}\n\nAction requise : vérifier manuellement la liste des clients du jour et envoyer les notifications manquantes.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7e53693d-5188-4aa4-b576-c269a9f73508",
+      "name": "Error Alert WF",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -3136,
+        3696
+      ],
+      "webhookId": "8a312f47-a667-49e2-9daa-4d3c00785683",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "b6TTQUXnPTgHFYJY",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "454fdbae-624f-49a3-86d1-510303ed8368",
+      "name": "No-Op Dimanche1",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -4592,
+        4096
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d635d346-a4a9-42ab-9114-762e140d158a",
+      "name": "No-Op Aucune Notif1",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -3856,
+        4144
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "d023a8a8-2476-4d8d-bc6a-b0f10225e97d",
+      "name": "Trigger 6h00 Tahiti1",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -5392,
+        3984
+      ],
+      "notes": "Déclenché à 7h00 heure Tahiti (Pacific/Tahiti). Vérifier que le timezone de l'instance N8N est réglé sur Pacific/Tahiti."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Current Day1": {
+      "main": [
+        [
+          {
+            "node": "Is Weekday?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Weekday?1": {
+      "main": [
+        [
+          {
+            "node": "Get Today Rows1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No-Op Dimanche1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today Rows1": {
+      "main": [
+        [
+          {
+            "node": "Filter & Prepare Notifications1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Prepare Notifications1": {
+      "main": [
+        [
+          {
+            "node": "Has Notifications?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Notifications?1": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp Matin1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email Matin1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No-Op Aucune Notif1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp Matin1": {
+      "main": [
+        [
+          {
+            "node": "Check Notification Results1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Notification Results1": {
+      "main": [
+        [
+          {
+            "node": "Has Errors?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Errors?1": {
+      "main": [
+        [
+          {
+            "node": "Error Alert WF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger 6h00 Tahiti1": {
+      "main": [
+        [
+          {
+            "node": "Get Current Day1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "161954e5-7c2a-4faa-846d-1faa8e387662",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5377acbedc992c1c25079146748249bcb846cf10efdaa1a606cbdf5e41850336"
+  },
+  "id": "fr82uXEg5vv832BSd0-vr",
+  "tags": []
+}

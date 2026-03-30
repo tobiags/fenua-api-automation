@@ -1,0 +1,53 @@
+# ── Credentials (NEVER push) ─────────────────────────────────
+*.json.key
+automatisation-*.json
+*service-account*.json
+*credentials*.json
+.env
+.env.*
+
+# ── Python ────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Test results (generated, not source) ─────────────────────
+results/
+
+# ── Local editor & OS ─────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# ── One-off build/fix scripts (internal tooling) ─────────────
+fix_*.py
+build_*.py
+generate_*.py
+extract_pdf.py
+read_pdf.py
+remove_*.py
+update_*.py
+pdf_output*.txt
+
+# ── Draft documents ───────────────────────────────────────────
+cahier-des-charges-v1.1.md
+cahier-des-charges-v1.2.md
+plan-technique-COMPLET.md
+PROMPT_IMPLEMENTATION_LLM.md
+Plan_Technique_FenuaApi_v1.0.docx
+
+# ── Raw data / demo sheets ────────────────────────────────────
+DATA\ FENUA\ API.xlsx
+FenuaApi_TEST_Demo.xlsx
+_PLANING\ LIVRAISON\ N8N*.xlsx
+
+# ── PDFs (documents internes) ────────────────────────────────
+*.pdf
+
+# ── Screenshots / temp ────────────────────────────────────────
+111111.png
+222222.png
+3333333.png

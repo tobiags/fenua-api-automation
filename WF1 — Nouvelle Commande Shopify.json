@@ -1,0 +1,1973 @@
+{
+  "name": "WF1 — Nouvelle Commande Shopify",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "topic": "orders/create"
+      },
+      "id": "bdcb96c7-0668-4255-a4a5-7e21fbf12fea",
+      "name": "Shopify Trigger1",
+      "type": "n8n-nodes-base.shopifyTrigger",
+      "typeVersion": 1,
+      "position": [
+        5392,
+        9088
+      ],
+      "webhookId": "9f612a84-5964-476b-825b-138bbb3d2e20",
+      "credentials": {
+        "shopifyOAuth2Api": {
+          "id": "YtTyZZxRWbNOIXt9",
+          "name": "Shopify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Node: Extract Order Data\n// WF1 - Extraction et structuration données commande Shopify\n// ============================================================\n\n\nconst order = $input.first().json;\n\n// SÉCURITÉ : validation commande\nif (!order || !order.id) {\n  throw new Error('[WF1] Commande Shopify invalide ou données manquantes');\n}\n\n// --- PRODUITS : \"1 Aspirateur ; 2 SOLID TAPE\" ---\nconst lineItems = order.line_items || [];\nconst produitsStr = lineItems\n  .map(item => `${item.quantity} ${item.title}`)\n  .join(' ; ') || 'Produit inconnu';\n\n// --- TÉLÉPHONE : priorité shipping > billing > customer ---\nlet phone =\n  order.shipping_address?.phone ||\n  order.billing_address?.phone ||\n  order.phone ||\n  order.customer?.phone ||\n  '';\nphone = phone.replace(/[\\s\\-\\(\\)]/g, '');\nif (phone && !phone.startsWith('+')) {\n  phone = phone.startsWith('689') ? '+' + phone : '+689' + phone;\n}\n\n// --- EMAIL CLIENT ---\nconst emailClient =\n  order.contact_email ||\n  order.email ||\n  order.customer?.email ||\n  '';\n\n// --- LIEU DE LIVRAISON ---\nconst sh = order.shipping_address || {};\nconst lieuLivraison = [sh.address1, sh.city].filter(Boolean).join(', ') || 'Non spécifié';\n\n// --- NOM CLIENT ---\nconst clientName = `${order.customer?.first_name || ''} ${order.customer?.last_name || ''}`.trim() || 'Client';\n\n// --- DATE (format Tahiti) ---\nconst tahitiTime = new Date().toLocaleString(\"en-US\", {timeZone: \"Pacific/Tahiti\"});\nconst now = new Date(tahitiTime);\nconst dateStr = (String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear());\n\n// --- PRIX TOTAL ---\nconst totalPrice = parseFloat(order.total_price || 0);\nconst prixTotal = `${Math.round(totalPrice)} F`;\n\n// --- DÉTECTION FRET (correspondance EXACTE) ---\nconst shippingLines = order.shipping_lines || [];\nconst shippingTitle = shippingLines[0]?.title || '';\nconst isFret = (shippingTitle === 'Fret pour les îles');\n\n\n// --- DÉTECTION DÉPÔT-VENTE ---\nconst shippingTitleLower = shippingTitle.toLowerCase()\n  .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\nconst isDepotVente = shippingTitleLower.includes('recup')\n                  || shippingTitleLower.includes('depot');\nreturn [{\n  json: {\n    idShopify:      order.id.toString(),\n    refCommande:    `#${order.order_number}`,\n    date:           dateStr,\n    aClient:        clientName,\n    telephone:      phone,\n    emailClient:    emailClient,\n    lieuLivraison:  lieuLivraison,\n    produits:       produitsStr,\n    prixTotal:      prixTotal,\n    livraison:      'Livraison en attente',\n    isFret:         isFret,\n    isDepotVente:   isDepotVente,\n    shippingTitle:  shippingTitle,\n    orderId:        order.id\n  }\n}];"
+      },
+      "id": "bb1f8f31-bb6e-4420-bce5-af24d34ac82b",
+      "name": "Extract Order Data1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5696,
+        9088
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Node: Determine Target Tab\n// WF1 - Quel onglet Google Sheets pour cette commande ?\n// ============================================================\n\nconst data = $input.first().json;\n\n// Luxon weekday: 1=Lun, 2=Mar, 3=Mer, 4=Jeu, 5=Ven, 6=Sam, 7=Dim\nconst tahitiTime = new Date().toLocaleString(\"en-US\", {timeZone: \"Pacific/Tahiti\"});\nconst now = new Date(tahitiTime);\nconst weekday = (now.getDay() === 0 ? 7 : now.getDay());\n\nconst dayTabMap = {\n  1: 'Lundi',\n  2: 'Mardi',\n  3: 'Mercredi',\n  4: 'Jeudi',\n  5: 'Vendredi',\n  6: 'Samedi'\n};\n\n// --- 1. DÉTECTION ZONES ÉLOIGNÉES ---\nconst remoteZones = [\n  'mataiea', 'paea', 'papara', 'mahina', 'tiarei', 'faaone', \n  'taravao', 'vairao', 'teahupoo', 'tautira', 'papenoo', \n  'hitiaa', 'papeari'\n];\n\nlet isRemoteZone = false;\nconst addressToSearch = (data.lieuLivraison || '').toLowerCase();\n// Enlever les accents pour sécuriser la recherche\nconst normalizedAddress = addressToSearch.normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\");\n\nfor (const zone of remoteZones) {\n  if (normalizedAddress.includes(zone)) {\n    isRemoteZone = true;\n    break;\n  }\n}\n\n// --- 2. ROUTAGE (Ordre de priorité : FRET > Zone Éloignée > J+1) ---\nlet targetTab;\n\nif (data.isFret) {\n  // FRET → onglet FRET (indépendant de la ville et du jour)\n  targetTab = 'FRET';\n} else if (data.isDepotVente) {\n  // DÉPÔT-VENTE → onglet dépôt-vente\n  targetTab = 'DEPOT_VENTE';\n} else if (isRemoteZone) {\n  // Zone Éloignée → TOUJOURS le Samedi\n  targetTab = 'Samedi';\n} else {\n  // Commande standard → ROUTAGE \n  // Vendredi (5), Samedi (6) et Dimanche (7) vont tous les trois au Lundi\n  if (weekday === 5 || weekday === 6 || weekday === 7) {\n    targetTab = 'Lundi';\n  } else {\n    // Lundi->Mardi (2), Mardi->Mercredi (3), Mercredi->Jeudi (4), Jeudi->Vendredi (5)\n    targetTab = dayTabMap[weekday + 1] || 'Lundi';\n  }\n}\n\nreturn [{\n  json: {\n    ...data,\n    targetTab: targetTab,\n    isDepotVente:  data.isDepotVente,\n    isRemoteZone:  isRemoteZone,\n    orderWeekdayOrigin: weekday\n  }\n}];"
+      },
+      "id": "488448a1-dc62-42be-ba90-cdeecb341209",
+      "name": "Determine Target Tab1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5920,
+        9088
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "FRET",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "9cbc6712-688c-4d60-825a-a7fa4f3e0a01"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "FRET"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Lundi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "a2326519-23aa-462a-a551-f995862536c4"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Lundi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Mardi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3ede61f4-862d-454a-9463-446b65fe957d"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Mardi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Mercredi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "f50fc205-0598-46e8-9829-54fd2fce37d0"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Mercredi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Jeudi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "beb9b601-b69f-4786-9e20-3e34cf1c72d9"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Jeudi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Vendredi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3299c533-86d4-4ffc-9a46-912625b35dfe"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Vendredi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "Samedi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "028df16f-70ff-4db3-843d-a7853b98eb25"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Samedi"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.targetTab }}",
+                    "rightValue": "DEPOT_VENTE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Depot-Vente"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "d269a5f4-de9a-40a8-a794-8eda61baa942",
+      "name": "Route by Tab1",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        6128,
+        8976
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 140792670,
+          "mode": "list",
+          "cachedResultName": "FRET",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0/edit#gid=140792670"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "0fb14515-7c76-4ee1-a345-a89c7d96c681",
+      "name": "Sheets Append FRET1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        8592
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Lundi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "c52600de-46c9-4797-b701-57d11ecb905a",
+      "name": "Sheets Append Lundi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        8800
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Mardi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "5b8ea639-ad84-48eb-8901-e171d4e7ecb7",
+      "name": "Sheets Append Mardi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6608,
+        8992
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Mercredi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "4334bbbb-c07e-40a7-b249-bf089a9588c7",
+      "name": "Sheets Append Mercredi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        9184
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Jeudi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b8edf8f3-60ee-4363-836e-0cee115bde70",
+      "name": "Sheets Append Jeudi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        9344
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Vendredi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "abf3b5ae-97d4-423f-b4e5-922a639e365b",
+      "name": "Sheets Append Vendredi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        9536
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "=1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Samedi"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "dea49e13-ce73-4ea3-b7f8-80e1c24cf9b9",
+      "name": "Sheets Append Samedi1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6624,
+        9728
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "=1009160395618364",
+        "recipientPhoneNumber": "={{ $('Route by Tab1').item.json.telephone }}",
+        "textBody": "=Iaorana ici Fenua Api: commande validée. Paiement par virement {{ $('Route by Tab1').item.json.prixTotal }}.\nIntitulé RYAN B. RIB 17469 00027 02229540001 17\nIBAN FR76 1746 9000 2702 2295 4000 117.\nEnvoyez une preuve du virement à support@fenuapi.com ou Facebook pour expédition rapide. Merci",
+        "additionalFields": {}
+      },
+      "id": "e293d252-b668-4a03-a390-6a2f7155ce41",
+      "name": "WhatsApp FRET1",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        7008,
+        8512
+      ],
+      "webhookId": "e4d6e9a0-9143-4fe1-9ab3-14bd15a21103",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "USY4io4YgO0uWXdC",
+          "name": "WhatsApp account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Route by Tab1').item.json.emailClient }}",
+        "subject": "=Fenua Api — Commande {{ $('Route by Tab1').item.json.refCommande }} validée (FRET)",
+        "emailType": "text",
+        "message": "=Iaorana {{ $('Route by Tab1').item.json.aClient }},\n\nVotre commande {{ $('Route by Tab1').item.json.refCommande }} a été validée.\n\nPaiement par virement de {{ $('Route by Tab1').item.json.prixTotal }}.\n\nIntitulé du virement : RYAN B.\nRIB : 17469 00027 02229540001 17\nIBAN : FR76 1746 9000 2702 2295 4000 117\n\nEnvoyez une preuve du virement à support@fenuapi.com ou via notre page Facebook pour une expédition rapide.\n\nMerci et belle journée !\nFenua Api",
+        "options": {}
+      },
+      "id": "82fdd1e0-2d63-4af2-81b8-4cd2a00f7b8f",
+      "name": "Email FRET1",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        6992,
+        8848
+      ],
+      "webhookId": "d746da0f-0892-4449-a708-255baf5944b9",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "b6TTQUXnPTgHFYJY",
+          "name": "Gmail account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "support@fenuapi.com",
+        "subject": "=[ERREUR WF1] Commande - {{ $json.refCommande || 'N/A' }}",
+        "emailType": "text",
+        "message": "=Erreur WF1 — Nouvelle commande Shopify.\n\nCommande : {{ $json.refCommande || 'Inconnue' }}\nClient    : {{ $json.aClient || 'Inconnu' }}\nErreur    : Routage inconnu - targetTab non reconnu ({{ $json.targetTab || '?' }})\nDate      : {{ $now }}\n\nAction requise : vérifier manuellement l'ajout dans Google Sheets.",
+        "options": {}
+      },
+      "id": "8aef51fa-4b66-477c-a7b2-8805aed35b81",
+      "name": "Error Alert WF",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        6624,
+        9920
+      ],
+      "webhookId": "07e11098-1380-43ef-99d0-6ae3bb793060",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "b6TTQUXnPTgHFYJY",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Depot vente"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID Shopify": "={{ $json.idShopify }}",
+            "Réf commande": "={{ $json.refCommande }}",
+            "Date": "={{ $json.date }}",
+            "À CLIENT": "={{ $json.aClient }}",
+            "Téléphone": "={{ $json.telephone }}",
+            "Lieu de livraison": "={{ $json.lieuLivraison }}",
+            "Produits": "={{ $json.produits }}",
+            "Prix TOTAL": "={{ $json.prixTotal }}",
+            "Livraison": "={{ $json.livraison }}",
+            "Email client": "={{ $json.emailClient }}",
+            "Mode de livraison": "={{ $json.shippingTitle }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Mode de livraison",
+              "displayName": "Mode de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1d014fc6-a29f-4c25-9e9d-c3cc2bbd60f7",
+      "name": "Sheets Append Depot-Vente",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        6544,
+        10208
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Shopify Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Extract Order Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Order Data1": {
+      "main": [
+        [
+          {
+            "node": "Determine Target Tab1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Target Tab1": {
+      "main": [
+        [
+          {
+            "node": "Route by Tab1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Tab1": {
+      "main": [
+        [
+          {
+            "node": "Sheets Append FRET1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Lundi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Mardi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Mercredi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Jeudi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Vendredi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Samedi1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheets Append Depot-Vente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Alert WF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets Append FRET1": {
+      "main": [
+        [
+          {
+            "node": "WhatsApp FRET1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email FRET1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "3f5c3bd9-52d4-4d08-94ee-ddfdb63c66f6",
+  "meta": {
+    "instanceId": "5377acbedc992c1c25079146748249bcb846cf10efdaa1a606cbdf5e41850336"
+  },
+  "id": "7HwBIA3FPDVqJxqg",
+  "tags": []
+}

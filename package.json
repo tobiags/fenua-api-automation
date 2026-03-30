@@ -1,0 +1,23 @@
+{
+  "name": "fenua-api-automation",
+  "version": "1.0.0",
+  "description": "Automation workflows for Fenua Api delivery operations in Tahiti — Shopify → Google Sheets → SMS",
+  "private": true,
+  "scripts": {
+    "test": "node tests/runner.js",
+    "test:quick": "node tests/runner.js --cycles 1 --scenarios 10",
+    "test:full": "node tests/runner.js --cycles 5 --scenarios 50"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "n8n",
+    "shopify",
+    "automation",
+    "tahiti",
+    "google-sheets",
+    "twilio"
+  ],
+  "license": "UNLICENSED"
+}

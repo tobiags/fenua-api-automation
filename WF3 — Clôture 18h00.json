@@ -1,0 +1,1025 @@
+{
+  "name": "WF3 — Clôture 18h00",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 18
+            }
+          ]
+        }
+      },
+      "id": "a447c17d-6d4e-4710-9f88-a1106131dff0",
+      "name": "Trigger 18h00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        3920,
+        12448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===========================================\n// Node: Get Current Day\n// ===========================================\nconst tahitiTime = new Date().toLocaleString('en-US', {timeZone: 'Pacific/Tahiti'});\nconst now = new Date(tahitiTime);\n// getDay() gives 0 for Sunday. We want 1=Monday...7=Sunday\nconst weekday = (now.getDay() === 0 ? 7 : now.getDay());\n\nconst dayTabMap = {\n  1: 'Lundi', 2: 'Mardi', 3: 'Mercredi',\n  4: 'Jeudi', 5: 'Vendredi', 6: 'Samedi'\n};\nconst currentTab = dayTabMap[weekday] || null;\n\nreturn [{\n  json: {\n    isWeekday:  !!currentTab,\n    currentTab: currentTab,\n    weekday:    weekday,\n    dateStr:    (String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear())\n  }\n}];\n"
+      },
+      "id": "49a695b3-1519-47d6-9b90-cd36abd0cd4c",
+      "name": "Get Current Day",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4192,
+        12448
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.isWeekday }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5b628273-aa4f-4c16-b179-fa40ba5b49b7",
+      "name": "Is Weekday?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4368,
+        12448
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $node['Get Current Day'].json.currentTab }}"
+        },
+        "options": {}
+      },
+      "id": "4f115adf-17c9-4292-a368-e8ed5bb2c70d",
+      "name": "Get Today Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        4624,
+        12432
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rows = $input.all();\nconst toFulfill = [];\nfor (const row of rows) {\n  const r = row.json;\n  const note = String(r['NOTE'] || '').trim().toLowerCase();\n  const isCanceled = note.includes('annuler') || note.includes('annulé') || note.includes('annule');\n\n  const livStatut = String(r['Livraison'] || '').trim();\n  const livNorm = livStatut.toLowerCase()\n    .normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\"); // enlève les accents\n  const isEffectuee = livNorm.includes('effectu') || livNorm.includes('livre'); // match effectué, livré, livrée\n  if (isEffectuee && !isCanceled) {\n    const orderId = String(r['ID Shopify'] || '').trim();\n    if (orderId && orderId !== '9999999999' && orderId !== 'ID Shopify' \n        && !orderId.includes('[ex:')) {\n      toFulfill.push({ orderId, refCommande: r['Réf commande'] });\n    }\n  }\n}\nif (toFulfill.length === 0) {\n  return [];\n}\nreturn toFulfill.map(o => ({ json: o }));\n"
+      },
+      "id": "8da9e64f-9811-4c4f-81fd-7bc11904b51d",
+      "name": "Prepare Fulfillments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4896,
+        12048
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://b888b7-aa.myshopify.com/admin/api/2024-01/orders/{{ $json.orderId }}/fulfillment_orders.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "shopifyOAuth2Api",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "c81e8ad6-e3d8-4048-8b9f-3e655e0677ae",
+      "name": "Get Fulfillment Orders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5104,
+        12048
+      ],
+      "retryOnFail": false,
+      "credentials": {
+        "shopifyOAuth2Api": {
+          "id": "YtTyZZxRWbNOIXt9",
+          "name": "Shopify account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst toCancel = [];\n\nfor (const row of rows) {\n  const r = row.json;\n  const note = String(r['NOTE'] || '').trim().toLowerCase();\n  const isCanceled = note.includes('annuler') || note.includes('annulé') || note.includes('annule');\n  \n  if (isCanceled) {\n    const orderId = String(r['ID Shopify'] || '').trim();\n    if (orderId && orderId !== '9999999999' && orderId !== 'ID Shopify'\n        && !orderId.includes('[ex:')) {\n      toCancel.push({ orderId, refCommande: r['Réf commande'] });\n    }\n  }\n}\n\nif (toCancel.length === 0) {\n  return [];\n}\nreturn toCancel.map(o => ({ json: o }));\n"
+      },
+      "id": "a60593a4-1bbb-4a0b-b8f6-bfc326b253ac",
+      "name": "Prepare Cancellations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4928,
+        12272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://b888b7-aa.myshopify.com/admin/api/2024-01/orders/{{ $json.orderId }}/cancel.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "shopifyOAuth2Api",
+        "options": {}
+      },
+      "id": "456c27af-0c72-40c5-8ab3-c84f604e0a3c",
+      "name": "Shopify Cancel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5184,
+        12272
+      ],
+      "credentials": {
+        "shopifyOAuth2Api": {
+          "id": "YtTyZZxRWbNOIXt9",
+          "name": "Shopify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nconst toPostpone = [];\nconst validDays = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];\n\nfor (const row of rows) {\n  const r = row.json;\n  const note = String(r['NOTE'] || '').trim().toLowerCase();\n  \n  let targetDay = null;\n  for (const d of validDays) {\n    const regex = new RegExp('\\\\b' + d + '\\\\b');\n    if (regex.test(note)) { targetDay = d.charAt(0).toUpperCase() + d.slice(1); break; }\n  }\n  \n  const isCanceled = note.includes('annuler') || note.includes('annulé') || note.includes('annule');\n  const livStatut = String(r['Livraison'] || '').trim();\n  const livNorm = livStatut.toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\");\n  const isEffectuee = livNorm.includes('effectu') || livNorm.includes('livre');\n  \n  if (targetDay && !isCanceled && !isEffectuee) {\n    toPostpone.push({\n      targetTab:            targetDay,\n      \"ID Shopify\":         r['ID Shopify'] || '',\n      \"Réf commande\":       r['Réf commande'] || '',\n      \"Date\":               r['Date'] || '',\n      \"À CLIENT\":           r['À CLIENT'] || '',\n      \"Téléphone\":          r['Téléphone'] || '',\n      \"Lieu de livraison\":  r['Lieu de livraison'] || '',\n      \"Produits\":           r['Produits'] || '',\n      \"Prix TOTAL\":         r['Prix TOTAL'] || '',\n      \"Horaire\":            r['Horaire'] || '',\n      \"NOTE\":               r['NOTE'] || '',\n      \"Livreur\":            r['Livreur'] || '',\n      \"Livraison\":          'Livraison en attente'\n    });\n  }\n}\nreturn toPostpone.map(o => ({ json: o }));\n"
+      },
+      "id": "701c0bc7-bd40-44ab-b20d-d605f11f8afa",
+      "name": "Prepare Postponements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4928,
+        12432
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.targetTab }}"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID Shopify",
+              "displayName": "ID Shopify",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "À CLIENT",
+              "displayName": "À CLIENT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Livraison",
+              "displayName": "Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email client",
+              "displayName": "Email client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "targetTab",
+              "displayName": "targetTab",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "8bf8d0c0-ded4-4ff9-8328-49b94666fb4e",
+      "name": "Sheets Append Postpone",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        5200,
+        12432
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const tahitiTime = new Date().toLocaleString(\"en-US\", {timeZone: \"Pacific/Tahiti\"});\nconst now = new Date(tahitiTime);\nconst dateCloture = (String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear());\n\nconst rows = $input.all();\nconst comptableData = [];\nlet totalGeneral = 0, totalEspeces = 0, totalCheque = 0, totalVirement = 0;\nconst livreurStats = {};\n\nfor (const row of rows) {\n  const r = row.json;\n  if (!r['ID Shopify'] || r['ID Shopify'] === 'ID Shopify' || String(r['ID Shopify']).includes('[ex:')) continue;\n\n  const livStatut = String(r['Livraison'] || '').trim();\n  if (!livStatut || livStatut === 'Livraison en attente') continue;\n\n  const livNorm = livStatut.toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\");\n  const isEffectuee = livNorm.includes('effectu') || (livNorm.includes('livre') && !livNorm.includes('non livre'));\n\n  const paiement = String(r['Moyen de paiement'] || r['Paiement'] || '').trim();\n\n  if (isEffectuee) {\n    const montant = parseInt(String(r['Prix TOTAL'] || '0').replace(/[^0-9]/g, ''), 10) || 0;\n    totalGeneral += montant;\n    const pNorm = paiement.toLowerCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\");\n    if (pNorm.includes('espece') || pNorm.includes('cash')) totalEspeces += montant;\n    else if (pNorm.includes('cheque')) totalCheque += montant;\n    else if (pNorm.includes('virement')) totalVirement += montant;\n    else totalEspeces += montant;\n    const livreurName = (r['Livreur'] || 'Non assign\\u00e9').trim();\n    if (!livreurStats[livreurName]) livreurStats[livreurName] = { count: 0, total: 0 };\n    livreurStats[livreurName].count++;\n    livreurStats[livreurName].total += montant;\n  }\n\n  comptableData.push({\n    \"Date livraison\": r['Date'] || '', \"R\\u00e9f commande\": r['R\\u00e9f commande'] || '',\n    \"Client\": r['\\u00c0 CLIENT'] || '', \"Lieu de livraison\": r['Lieu de livraison'] || '',\n    \"Produits\": r['Produits'] || '', \"Prix Total\": r['Prix TOTAL'] || '',\n    \"Moyen de paiement\": paiement, \"Livreur\": r['Livreur'] || '',\n    \"Statut Livraison\": livStatut, \"Date cl\\u00f4ture\": dateCloture, \"Total du jour\": '',\n    \"ID Shopify\": String(r['ID Shopify']) || '', \"Date\": r['Date'] || '',\n    \"\\u00c0 CLIENT\": r['\\u00c0 CLIENT'] || '', \"T\\u00e9l\\u00e9phone\": r['T\\u00e9l\\u00e9phone'] || '',\n    \"Horaire\": r['Horaire'] || '', \"NOTE\": r['NOTE'] || '',\n    \"Livraison\": livStatut, \"Prix TOTAL\": r['Prix TOTAL'] || '',\n    \"_dateCloture\": dateCloture, \"_totalGeneral\": totalGeneral,\n    \"_totalEspeces\": totalEspeces, \"_totalCheque\": totalCheque, \"_totalVirement\": totalVirement,\n    \"_livreurStats\": JSON.stringify(livreurStats), \"_summaryOnly\": false\n  });\n}\n\n// Toujours retourner au moins 1 item — si aucune livraison, item résumé avec totaux à 0\nif (comptableData.length === 0) {\n  return [{ json: {\n    \"_summaryOnly\": true, \"_dateCloture\": dateCloture,\n    \"_totalGeneral\": 0, \"_totalEspeces\": 0, \"_totalCheque\": 0, \"_totalVirement\": 0,\n    \"_livreurStats\": \"{}\"\n  }}];\n}\n\nconst last = comptableData[comptableData.length - 1];\nlast[\"Total du jour\"] = totalGeneral + ' F';\nreturn comptableData.map(d => ({ json: d }));\n"
+      },
+      "id": "f7f2561c-9828-471a-b507-e137734a0abd",
+      "name": "Prepare Comptable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4336,
+        12992
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1fdCkTXr7gs2614JO_X7YpCfkApcjhS8o4PSsBddeHX0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Suivi comptable"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date livraison": "={{ $json['Date livraison'] }}",
+            "Livreur": "={{ $json.Livreur }}",
+            "Moyen de paiement": "={{ $json['Moyen de paiement'] }}",
+            "Nombre de livraison": "={{ $json['Nombre de livraison'] }}",
+            "Total récolté": "={{ $json['Total récolté'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date livraison",
+              "displayName": "Date livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Nombre de livraison",
+              "displayName": "Nombre de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total récolté",
+              "displayName": "Total récolté",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b2969219-9b88-4477-98da-177bae00bb0f",
+      "name": "Append Suivi Comptable",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        5456,
+        12992
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1fdCkTXr7gs2614JO_X7YpCfkApcjhS8o4PSsBddeHX0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Historique"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Réf commande": "={{ $json['Réf commande'] }}",
+            "Téléphone": "={{ $('Prepare Comptable').item.json[\"Téléphone\"] }}",
+            "Lieu de livraison": "={{ $json['Lieu de livraison'] }}",
+            "Produits": "={{ $json.Produits }}",
+            "Prix TOTAL": "={{ $('Prepare Comptable').item.json[\"Prix TOTAL\"] }}",
+            "Horaire": "={{ $('Prepare Comptable').item.json.Horaire }}",
+            "NOTE": "={{ $('Prepare Comptable').item.json.NOTE }}",
+            "Livreur": "={{ $json.Livreur }}",
+            "Date clôture": "={{ $('Prepare Comptable').item.json[\"Date clôture\"] }}",
+            "Date livraison": "={{ $json[\"Date livraison\"] }}",
+            "Client": "={{ $json.Client }}",
+            "Moyen de paiement": "={{ $json[\"Moyen de paiement\"] }}",
+            "Total du jour": "={{ $json[\"Total du jour\"] }}",
+            "Statut Livraison": "={{ $('Prepare Comptable').item.json[\"Statut Livraison\"] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date livraison",
+              "displayName": "Date livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Réf commande",
+              "displayName": "Réf commande",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Client",
+              "displayName": "Client",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lieu de livraison",
+              "displayName": "Lieu de livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Produits",
+              "displayName": "Produits",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Livreur",
+              "displayName": "Livreur",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Statut Livraison",
+              "displayName": "Statut Livraison",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Moyen de paiement",
+              "displayName": "Moyen de paiement",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Prix TOTAL",
+              "displayName": "Prix TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "NOTE",
+              "displayName": "NOTE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Téléphone",
+              "displayName": "Téléphone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Horaire",
+              "displayName": "Horaire",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Date clôture",
+              "displayName": "Date clôture",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Total du jour",
+              "displayName": "Total du jour",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e2a4ce84-68c3-4611-8429-901e7ab315b7",
+      "name": "Append Historique",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        4880,
+        13344
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1vcYvjQ7EO-mBcuHl4s6i-mKoXMM4DFyBI1zsa4U3HU0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $node['Get Current Day'].json.currentTab }}"
+        },
+        "keepFirstRow": true
+      },
+      "id": "f4e1acd4-04cb-499c-8246-af7aad5cc7db",
+      "name": "Clear Today Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        5248,
+        12752
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "mLjjqQl6GNv4W1SS",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "aggregateItems",
+        "aggregate": "aggregateAllItemData"
+      },
+      "id": "122349a1-ce51-4063-abf7-29adfb830bb8",
+      "name": "Group Summary",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [
+        5520,
+        12752
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "support@fenuapi.com",
+        "subject": "=Fenua Api - Clôture terminée ({{ $node['Get Current Day'].json.dateStr }})",
+        "emailType": "text",
+        "message": "=Bilan de clôture du {{ $node['Get Current Day'].json.dateStr }}\n\n📦 TOTAL RÉCOLTÉ : {{ $('Prepare Comptable').last().json._totalGeneral }} F\n\n💵 Par moyen de paiement :\n• Espèces : {{ $('Prepare Comptable').last().json._totalEspeces }} F\n• Chèque   : {{ $('Prepare Comptable').last().json._totalCheque }} F\n• Virement  : {{ $('Prepare Comptable').last().json._totalVirement }} F\n\n🛵 Par livreur :\n{{ Object.entries(JSON.parse($('Prepare Comptable').last().json._livreurStats || '{}')).map(([l, s]) => '• ' + l + ' : ' + s.count + ' livraison(s) = ' + s.total + ' F').join('\\n') }}\n\n✅ Archivage et effacement de la feuille du jour terminés.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "90a12167-075d-43d1-9e49-dd9cf6cb8a7f",
+      "name": "Send Daily Summary",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        5760,
+        12752
+      ],
+      "webhookId": "767a9081-1642-40c1-89c3-d02a0fa55200",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "b6TTQUXnPTgHFYJY",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the fulfillment_order_id from Shopify API response\nconst resp = $input.first().json;\n\nif (resp.error || !resp.fulfillment_orders) {\n  return [];\n}\n\nconst orders = resp.fulfillment_orders;\nif (!orders || orders.length === 0) {\n  return [];\n}\n\nconst openOrder = orders.find(o => o.status === \"open\" || o.status === \"in_progress\");\nif (!openOrder) {\n  return [];\n}\n\nreturn [{ json: { fulfillmentOrderId: String(openOrder.id) } }];\n"
+      },
+      "id": "676e5967-8cf8-43ae-8860-4c1c7d4e87d6",
+      "name": "Extract Fulfillment Order ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5360,
+        12048
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://b888b7-aa.myshopify.com/admin/api/2024-01/fulfillments.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "shopifyOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"fulfillment\": {\n    \"message\": \"Livraison effectuée\",\n    \"notify_customer\": false,\n    \"line_items_by_fulfillment_order\": [\n      {\n        \"fulfillment_order_id\": {{ $json.fulfillmentOrderId }}\n      }\n    ]\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "9e216d75-316d-459f-9e00-ebfcffd10b61",
+      "name": "Shopify Create Fulfillment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5584,
+        12048
+      ],
+      "credentials": {
+        "shopifyOAuth2Api": {
+          "id": "YtTyZZxRWbNOIXt9",
+          "name": "Shopify account"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nif (!rows || rows.length === 0) return [];\n\nconst lastItem = rows[rows.length - 1].json;\nconst dateCloture = lastItem._dateCloture || lastItem['Date cl\\u00f4ture'] || '';\nconst stats = {};\n\nfor (const row of rows) {\n  const r = row.json;\n  if (r._summaryOnly) continue;\n  const statut = String(r['Statut Livraison'] || r['Livraison'] || '').trim();\n  const sNorm = statut.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n  if (!sNorm.includes('effectu') && !(sNorm.includes('livre') && !sNorm.includes('non livre'))) continue;\n\n  const livreur = (r['Livreur'] || 'Non assign\\u00e9').trim();\n  const paiement = String(r['Moyen de paiement'] || 'Esp\\u00e8ces').trim() || 'Esp\\u00e8ces';\n  const montant = parseInt(String(r['Prix Total'] || r['Prix TOTAL'] || '0').replace(/[^0-9]/g, ''), 10) || 0;\n\n  const key = livreur + '||' + paiement;\n  if (!stats[key]) stats[key] = { livreur, paiement, count: 0, total: 0 };\n  stats[key].count++;\n  stats[key].total += montant;\n}\n\nconst result = [];\nfor (const s of Object.values(stats)) {\n  result.push({ json: {\n    'Date livraison': dateCloture, 'Livreur': s.livreur,\n    'Moyen de paiement': s.paiement, 'Nombre de livraison': s.count,\n    'Total r\\u00e9colt\\u00e9': s.total, '_summaryOnly': false,\n    '_dateCloture': dateCloture,\n    '_totalGeneral': lastItem._totalGeneral || 0,\n    '_totalEspeces': lastItem._totalEspeces || 0,\n    '_totalCheque': lastItem._totalCheque || 0,\n    '_totalVirement': lastItem._totalVirement || 0,\n    '_livreurStats': lastItem._livreurStats || '{}'\n  }});\n}\n\n// Toujours retourner 1 item pour que Clear Today Sheet et Send Daily Summary tournent\nif (result.length === 0) {\n  return [{ json: {\n    '_summaryOnly': true, '_dateCloture': dateCloture,\n    '_totalGeneral': lastItem._totalGeneral || 0,\n    '_totalEspeces': lastItem._totalEspeces || 0,\n    '_totalCheque': lastItem._totalCheque || 0,\n    '_totalVirement': lastItem._totalVirement || 0,\n    '_livreurStats': lastItem._livreurStats || '{}'\n  }}];\n}\nreturn result;\n"
+      },
+      "id": "9cbca626-7335-48b6-85be-9008873d454a",
+      "name": "Prepare Suivi Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4720,
+        12992
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(item => !item.json._summaryOnly);"
+      },
+      "id": "5025e32f-92b1-4660-91e7-2ad0c14aa40e",
+      "name": "Filter Historique",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4624,
+        13344
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().filter(item => !item.json._summaryOnly);"
+      },
+      "id": "9e2a28f1-ec20-4ac2-9aec-b2c122b860c7",
+      "name": "Filter Suivi",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        12992
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger 18h00": {
+      "main": [
+        [
+          {
+            "node": "Get Current Day",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Current Day": {
+      "main": [
+        [
+          {
+            "node": "Is Weekday?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Weekday?": {
+      "main": [
+        [
+          {
+            "node": "Get Today Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today Rows": {
+      "main": [
+        [
+          {
+            "node": "Prepare Cancellations",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Postponements",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Comptable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Fulfillments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Fulfillments": {
+      "main": [
+        [
+          {
+            "node": "Get Fulfillment Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Cancellations": {
+      "main": [
+        [
+          {
+            "node": "Shopify Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Postponements": {
+      "main": [
+        [
+          {
+            "node": "Sheets Append Postpone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Today Sheet": {
+      "main": [
+        [
+          {
+            "node": "Group Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Fulfillment Orders": {
+      "main": [
+        [
+          {
+            "node": "Extract Fulfillment Order ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Fulfillment Order ID": {
+      "main": [
+        [
+          {
+            "node": "Shopify Create Fulfillment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Comptable": {
+      "main": [
+        [
+          {
+            "node": "Filter Historique",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Suivi Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Historique": {
+      "main": [
+        [
+          {
+            "node": "Append Historique",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Suivi Rows": {
+      "main": [
+        [
+          {
+            "node": "Filter Suivi",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clear Today Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Suivi": {
+      "main": [
+        [
+          {
+            "node": "Append Suivi Comptable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "3549d6f5-2adc-467a-a6f1-6408910dedf7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5377acbedc992c1c25079146748249bcb846cf10efdaa1a606cbdf5e41850336"
+  },
+  "id": "fgrRgB6bc1yV6KuB",
+  "tags": []
+}
